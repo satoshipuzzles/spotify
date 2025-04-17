@@ -1,7 +1,7 @@
 // bot.js
 import 'dotenv/config';
 
-// 1) Polyfill WebSocket in Node.js (using ws)
+// 1) Polyfill WebSocket in Node.js
 import WebSocket from 'ws';
 import { useWebSocketImplementation, SimplePool } from 'nostr-tools/pool';
 globalThis.WebSocket = WebSocket;
@@ -15,30 +15,33 @@ import SpotifyWebApi from 'spotify-web-api-node';
 import { getOrCreatePlaylistForPubKey } from './lib/db.js';
 
 // — Bot config & sanity check —
-const BOT_SK  = process.env.BOT_NOSTR_PRIVATE_KEY;
+const BOT_SK = process.env.BOT_NOSTR_PRIVATE_KEY;
 if (!BOT_SK) throw new Error('Missing BOT_NOSTR_PRIVATE_KEY');
-const BOT_PK  = getPublicKey(BOT_SK);
-const RELAYS  = process.env.NOSTR_RELAYS.split(',');
-const pool    = new SimplePool();
+const BOT_PK = getPublicKey(BOT_SK);
+const RELAYS = process.env.NOSTR_RELAYS.split(',');
+const pool   = new SimplePool();
 
-// — 4) Publish bot metadata (Kind 0) so clients see name/avatar — 
+// — Publish bot metadata (Kind 0) —
 const metadata = {
   kind:       0,
   pubkey:     BOT_PK,
   created_at: Math.floor(Date.now() / 1000),
   tags:       [],
-  content: JSON.stringify({
+  content:    JSON.stringify({
     name:    process.env.NEXT_PUBLIC_BOT_NAME,
     picture: process.env.NEXT_PUBLIC_BOT_AVATAR,
     about:   process.env.NEXT_PUBLIC_BOT_ABOUT,
   })
 };
 const signedMeta = finalizeEvent(metadata, BOT_SK);
-pool.publish(RELAYS, signedMeta)
-  .then(() => console.log('📡 Bot metadata published'))
-  .catch(err => console.error('⚠️ Failed to publish metadata:', err));
+try {
+  pool.publish(RELAYS, signedMeta);
+  console.log('📡 Bot metadata published');
+} catch (err) {
+  console.error('⚠️ Failed to publish metadata:', err);
+}
 
-// — 5) Subscribe to any kind=1 note that tags your bot —
+// — Subscribe to Kind 1 mentions —
 console.log(`🚀 Subscribing for notes tagging ${BOT_PK} on ${RELAYS.join(', ')}`);
 pool.subscribe(
   RELAYS,
@@ -48,17 +51,17 @@ pool.subscribe(
       try {
         console.log('▶️  Mention:', event);
 
-        // a) extract all Spotify track IDs
+        // extract Spotify track IDs
         const ids = [...event.content.matchAll(
           /open\.spotify\.com\/track\/([A-Za-z0-9]+)/g
         )].map(m => m[1]);
         if (!ids.length) return;
 
-        // b) get (or create) this user’s playlist
+        // get/create this user’s playlist
         const { playlistId, accessToken } =
           await getOrCreatePlaylistForPubKey(event.pubkey);
 
-        // c) add tracks to Spotify
+        // add tracks on Spotify
         const spotify = new SpotifyWebApi();
         spotify.setAccessToken(accessToken);
         await spotify.addTracksToPlaylist(
@@ -66,7 +69,7 @@ pool.subscribe(
           ids.map(id => `spotify:track:${id}`)
         );
 
-        // d) build & sign a reply note
+        // build & sign reply
         const reply = {
           kind:       1,
           pubkey:     BOT_PK,
@@ -76,9 +79,13 @@ pool.subscribe(
         };
         const signedReply = finalizeEvent(reply, BOT_SK);
 
-        // e) publish confirmation back to all relays
-        await pool.publish(RELAYS, signedReply);
-        console.log('✔️  Replied and added tracks.');
+        // publish confirmation
+        try {
+          pool.publish(RELAYS, signedReply);
+          console.log('✔️  Replied and added tracks.');
+        } catch (pubErr) {
+          console.error('⚠️ Failed to publish reply:', pubErr);
+        }
       } catch (err) {
         console.error('❌ Error handling mention:', err);
       }
