@@ -1,31 +1,46 @@
 // bot.js
 import 'dotenv/config';
 
-// 1) Polyfill WebSocket
+// 1) Polyfill WebSocket in Node.js via ws
 import WebSocket from 'ws';
-import { useWebSocketImplementation, SimplePool } from 'nostr-tools/pool';
 globalThis.WebSocket = WebSocket;
-useWebSocketImplementation(WebSocket);
 
-// 2) Nostr helpers
-import { getPublicKey, finalizeEvent } from 'nostr-tools/pure';
+// 2) Load nostr-tools via CommonJS (so we get relayInit)
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const { relayInit } = require('nostr-tools');
+const { getPublicKey, finalizeEvent } = require('nostr-tools/pure');
 
 // 3) Spotify helper
 import SpotifyWebApi from 'spotify-web-api-node';
 import { getOrCreatePlaylistForPubKey } from './lib/db.js';
 
-// — Bot config —
+// — Bot config & sanity check —
 const BOT_SK = process.env.BOT_NOSTR_PRIVATE_KEY;
 if (!BOT_SK) throw new Error('Missing BOT_NOSTR_PRIVATE_KEY');
-const BOT_PK   = getPublicKey(BOT_SK);
-const RELAYS   = process.env.NOSTR_RELAYS.split(',');
-const pool     = new SimplePool();
+const BOT_PK = getPublicKey(BOT_SK);
 
-// — Publish Kind 0 metadata —
+const RELAYS = process.env.NOSTR_RELAYS.split(',');
+
+// — Connect to each relay —
+const relays = await Promise.all(
+  RELAYS.map(async url => {
+    const r = relayInit(url);
+    r.on('connect',    () => console.log(`✅ Connected to ${url}`));
+    r.on('error',      e => console.error(`❌ Relay error on ${url}:`, e));
+    r.on('disconnect', () => console.warn(`⚠️ Disconnected from ${url}`));
+    await r.connect();
+    return r;
+  })
+);
+
+console.log(`🎧 Listening for mentions of ${BOT_PK} on ${RELAYS.join(', ')}`);
+
+// — Publish Kind 0 metadata so clients see name/avatar —
 const meta = {
   kind:       0,
   pubkey:     BOT_PK,
-  created_at: Math.floor(Date.now() / 1000),
+  created_at: Math.floor(Date.now()/1000),
   tags:       [],
   content:    JSON.stringify({
     name:    process.env.NEXT_PUBLIC_BOT_NAME,
@@ -33,52 +48,52 @@ const meta = {
     about:   process.env.NEXT_PUBLIC_BOT_ABOUT,
   })
 };
-try {
-  pool.publish(RELAYS, finalizeEvent(meta, BOT_SK));
-  console.log('📡 Bot metadata published');
-} catch (e) {
-  console.error('⚠️ Metadata publish failed:', e);
-}
+const signedMeta = finalizeEvent(meta, BOT_SK);
+for (const r of relays) r.publish(signedMeta);
+console.log('📡 Bot metadata published');
 
-// — Subscribe! callbacks in the 3rd arg, no .on() needed —
-console.log(`🚀 Listening for mentions of ${BOT_PK}`);
-pool.subscribe(
-  RELAYS,
-  { kinds: [1], '#p': [BOT_PK] },
-  {
-    onevent: async (event) => {
+// — For each relay, subscribe to kind=1 notes tagging your bot —
+for (const relay of relays) {
+  const sub = relay.sub([{ kinds: [1], '#p': [BOT_PK] }]);
+
+  sub.on('event', async event => {
+    try {
       console.log('▶️  Mention:', event);
-      // 1) get track IDs
+
+      // extract track IDs
       const ids = [...event.content.matchAll(
         /open\.spotify\.com\/track\/([A-Za-z0-9]+)/g
       )].map(m => m[1]);
       if (!ids.length) return;
 
-      // 2) fetch/create playlist
-      const { playlistId, accessToken } =
-        await getOrCreatePlaylistForPubKey(event.pubkey);
+      // get or create playlist
+      const { playlistId, accessToken } = await getOrCreatePlaylistForPubKey(event.pubkey);
 
-      // 3) add to Spotify
-      const api = new SpotifyWebApi();
-      api.setAccessToken(accessToken);
-      await api.addTracksToPlaylist(
+      // add tracks
+      const spotify = new SpotifyWebApi();
+      spotify.setAccessToken(accessToken);
+      await spotify.addTracksToPlaylist(
         playlistId,
-        ids.map(i => `spotify:track:${i}`)
+        ids.map(id => `spotify:track:${id}`)
       );
 
-      // 4) reply on Nostr
+      // reply event
       const reply = {
         kind:       1,
         pubkey:     BOT_PK,
-        created_at: Math.floor(Date.now() / 1000),
+        created_at: Math.floor(Date.now()/1000),
         tags:       [['e', event.id]],
         content:    `✅ Added ${ids.length} track(s): https://open.spotify.com/playlist/${playlistId}`
       };
-      pool.publish(RELAYS, finalizeEvent(reply, BOT_SK));
+      const signed = finalizeEvent(reply, BOT_SK);
+
+      // publish reply everywhere
+      for (const r2 of relays) r2.publish(signed);
       console.log('✔️  Replied and added tracks.');
-    },
-    onerror: (err, relay) => {
-      console.error(`⚠️ Subscription error on ${relay}:`, err);
+    } catch (err) {
+      console.error('❌ Error handling mention:', err);
     }
-  }
-);
+  });
+
+  sub.on('error', e => console.error('⚠️ Subscription error:', e));
+}
