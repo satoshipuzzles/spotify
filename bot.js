@@ -1,8 +1,9 @@
 // bot.js
 import 'dotenv/config';
 
-// 1) Polyfill WebSockets for Node.js
-import 'websocket-polyfill';
+// 1) Polyfill WebSocket in Node.js using the already‑installed ws
+import WebSocket from 'ws';
+globalThis.WebSocket = WebSocket;
 
 // 2) Nostr relay & pure helpers
 import { relayInit } from 'nostr-tools';
@@ -25,7 +26,7 @@ const relayConnections = await Promise.all(
   RELAYS.map(async (url) => {
     const relay = relayInit(url);
     relay.on('connect',    () => console.log(`✅ Connected to ${url}`));
-    relay.on('error',      () => console.error(`❌ Relay error on ${url}`));
+    relay.on('error',      (e) => console.error(`❌ Relay error on ${url}:`, e));
     relay.on('disconnect', () => console.warn(`⚠️ Disconnected from ${url}`));
     await relay.connect();
     return relay;
@@ -78,5 +79,9 @@ for (const relay of relayConnections) {
     } catch (err) {
       console.error('❌ Error handling mention:', err);
     }
+  });
+
+  sub.on('error', (err) => {
+    console.error('⚠️ Subscription error on relay:', err);
   });
 }
