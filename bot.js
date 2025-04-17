@@ -1,15 +1,15 @@
 // bot.js
 import 'dotenv/config';
 
-// 1) Polyfill WebSocket in Node.js using the already‑installed ws
+// 1) Polyfill WebSocket for Node.js using ws
 import WebSocket from 'ws';
 globalThis.WebSocket = WebSocket;
 
-// 2) Nostr relay & pure helpers
-import { relayInit } from 'nostr-tools';
+// 2) Nostr relay & event helpers
+import { relayInit } from 'nostr-tools/relay';      // ← fixed import
 import { getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 
-// 3) Spotify helper
+// 3) Spotify integration
 import SpotifyWebApi from 'spotify-web-api-node';
 import { getOrCreatePlaylistForPubKey } from './lib/db.js';
 
@@ -18,10 +18,8 @@ const BOT_SK = process.env.BOT_NOSTR_PRIVATE_KEY;
 if (!BOT_SK) throw new Error('Missing BOT_NOSTR_PRIVATE_KEY');
 const BOT_PK = getPublicKey(BOT_SK);
 
-// — Parse our comma‑separated relays —
+// — Parse our comma‑separated relays & connect —
 const RELAYS = process.env.NOSTR_RELAYS.split(',');
-
-// — Connect to each relay and subscribe —
 const relayConnections = await Promise.all(
   RELAYS.map(async (url) => {
     const relay = relayInit(url);
@@ -35,7 +33,7 @@ const relayConnections = await Promise.all(
 
 console.log(`🎧 Listening for mentions of ${BOT_PK} on ${RELAYS.join(', ')}`);
 
-// — For each relay, subscribe to kind=1 events tagging us —
+// — Subscribe on each relay for kind=1 events tagging us —
 for (const relay of relayConnections) {
   const sub = relay.sub([{ kinds: [1], '#p': [BOT_PK] }]);
 
@@ -49,11 +47,11 @@ for (const relay of relayConnections) {
       )].map(m => m[1]);
       if (!ids.length) return;
 
-      // get or create this user’s playlist
+      // get or create that user’s playlist
       const { playlistId, accessToken } =
         await getOrCreatePlaylistForPubKey(event.pubkey);
 
-      // add tracks to Spotify
+      // add tracks
       const spotify = new SpotifyWebApi();
       spotify.setAccessToken(accessToken);
       await spotify.addTracksToPlaylist(
@@ -61,7 +59,7 @@ for (const relay of relayConnections) {
         ids.map(id => `spotify:track:${id}`)
       );
 
-      // build & sign a confirmation note
+      // build & sign the reply
       const template = {
         kind: 1,
         pubkey: BOT_PK,
@@ -71,17 +69,15 @@ for (const relay of relayConnections) {
       };
       const signed = finalizeEvent(template, BOT_SK);
 
-      // publish to all relays
-      for (const r of relayConnections) {
-        r.publish(signed);
-      }
+      // publish back to *all* relays
+      for (const r of relayConnections) r.publish(signed);
       console.log('✔️  Replied and added tracks.');
     } catch (err) {
       console.error('❌ Error handling mention:', err);
     }
   });
 
-  sub.on('error', (err) => {
-    console.error('⚠️ Subscription error on relay:', err);
+  sub.on('error', (er) => {
+    console.error('⚠️ Subscription error:', er);
   });
 }
