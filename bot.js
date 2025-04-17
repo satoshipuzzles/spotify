@@ -1,7 +1,8 @@
 // bot.js
 import 'dotenv/config';
-import pkg from 'nostr-tools';
-const { relayInit, getPublicKey, getEventHash, signEvent } = pkg;
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const { relayInit, getPublicKey, getEventHash, signEvent } = require('nostr-tools');
 import SpotifyWebApi from 'spotify-web-api-node';
 import { getOrCreatePlaylistForPubKey } from './lib/db.js';
 
@@ -11,7 +12,9 @@ const BOT_PK = getPublicKey(BOT_SK);
 const RELAYS = process.env.NOSTR_RELAYS.split(',');
 
 async function main() {
-  const conns = await Promise.all(RELAYS.map(url => relayInit(url).connect()));
+  const conns = await Promise.all(
+    RELAYS.map(url => relayInit(url).connect())
+  );
   const sub = conns[0].sub([{ kinds: [1], '#p': [BOT_PK] }]);
 
   sub.on('event', async event => {
