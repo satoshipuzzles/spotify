@@ -21,7 +21,7 @@ const BOT_PK = getPublicKey(BOT_SK);
 const RELAYS = process.env.NOSTR_RELAYS.split(',');
 const pool   = new SimplePool();
 
-// — Publish bot metadata (Kind 0) —
+// — Publish Kind 0 metadata so clients see your bot’s name/avatar —
 const metadata = {
   kind:       0,
   pubkey:     BOT_PK,
@@ -33,65 +33,63 @@ const metadata = {
     about:   process.env.NEXT_PUBLIC_BOT_ABOUT,
   })
 };
-const signedMeta = finalizeEvent(metadata, BOT_SK);
 try {
-  pool.publish(RELAYS, signedMeta);
+  pool.publish(RELAYS, finalizeEvent(metadata, BOT_SK));
   console.log('📡 Bot metadata published');
 } catch (err) {
   console.error('⚠️ Failed to publish metadata:', err);
 }
 
-// — Subscribe to Kind 1 mentions —
+// — Subscribe for kind=1 events tagging your bot’s pubkey —
 console.log(`🚀 Subscribing for notes tagging ${BOT_PK} on ${RELAYS.join(', ')}`);
-pool.subscribe(
+
+// **IMPORTANT**: pass an *array* of filter objects
+const sub = pool.subscribe(
   RELAYS,
-  { kinds: [1], '#p': [BOT_PK] },
-  {
-    onevent: async (event) => {
-      try {
-        console.log('▶️  Mention:', event);
-
-        // extract Spotify track IDs
-        const ids = [...event.content.matchAll(
-          /open\.spotify\.com\/track\/([A-Za-z0-9]+)/g
-        )].map(m => m[1]);
-        if (!ids.length) return;
-
-        // get/create this user’s playlist
-        const { playlistId, accessToken } =
-          await getOrCreatePlaylistForPubKey(event.pubkey);
-
-        // add tracks on Spotify
-        const spotify = new SpotifyWebApi();
-        spotify.setAccessToken(accessToken);
-        await spotify.addTracksToPlaylist(
-          playlistId,
-          ids.map(id => `spotify:track:${id}`)
-        );
-
-        // build & sign reply
-        const reply = {
-          kind:       1,
-          pubkey:     BOT_PK,
-          created_at: Math.floor(Date.now() / 1000),
-          tags:       [['e', event.id]],
-          content:    `✅ Added ${ids.length} track(s): https://open.spotify.com/playlist/${playlistId}`
-        };
-        const signedReply = finalizeEvent(reply, BOT_SK);
-
-        // publish confirmation
-        try {
-          pool.publish(RELAYS, signedReply);
-          console.log('✔️  Replied and added tracks.');
-        } catch (pubErr) {
-          console.error('⚠️ Failed to publish reply:', pubErr);
-        }
-      } catch (err) {
-        console.error('❌ Error handling mention:', err);
-      }
-    },
-    onerror: (err, relayUrl) => {
-      console.error(`⚠️ Subscription error on ${relayUrl}:`, err);
-    }
-  }
+  [
+    { kinds: [1], '#p': [BOT_PK] }
+  ]
 );
+
+// 4) Handle each incoming event
+sub.on('event', async (event) => {
+  try {
+    console.log('▶️  Mention:', event);
+
+    // a) extract Spotify track IDs
+    const ids = [...event.content.matchAll(
+      /open\.spotify\.com\/track\/([A-Za-z0-9]+)/g
+    )].map(m => m[1]);
+    if (!ids.length) return;
+
+    // b) get or create the user’s playlist
+    const { playlistId, accessToken } =
+      await getOrCreatePlaylistForPubKey(event.pubkey);
+
+    // c) add tracks on Spotify
+    const spotify = new SpotifyWebApi();
+    spotify.setAccessToken(accessToken);
+    await spotify.addTracksToPlaylist(
+      playlistId,
+      ids.map(id => `spotify:track:${id}`)
+    );
+
+    // d) build & sign a confirmation note
+    const reply = {
+      kind:       1,
+      pubkey:     BOT_PK,
+      created_at: Math.floor(Date.now() / 1000),
+      tags:       [['e', event.id]],
+      content:    `✅ Added ${ids.length} track(s): https://open.spotify.com/playlist/${playlistId}`
+    };
+    pool.publish(RELAYS, finalizeEvent(reply, BOT_SK));
+    console.log('✔️  Replied and added tracks.');
+  } catch (err) {
+    console.error('❌ Error handling mention:', err);
+  }
+});
+
+// 5) Handle subscription errors
+sub.on('error', (err, url) => {
+  console.error(`⚠️ Subscription error on ${url}:`, err);
+});
