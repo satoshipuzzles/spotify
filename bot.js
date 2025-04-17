@@ -1,28 +1,26 @@
 // bot.js
 import 'dotenv/config';
 
-// — 1) Wire up WebSocket for Node.js —
+// 1) Wire up WebSocket for Node.js
 import { useWebSocketImplementation, SimplePool } from 'nostr-tools/pool';
 import WebSocket from 'ws';
 useWebSocketImplementation(WebSocket);
 
-// — 2) Nostr primitives —
+// 2) Nostr helpers
 import { getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 
-// — 3) Spotify integration helper —
+// 3) Spotify helper
 import SpotifyWebApi from 'spotify-web-api-node';
 import { getOrCreatePlaylistForPubKey } from './lib/db.js';
 
-// — Bot configuration & sanity checks —
+// --- Bot config ---
 const BOT_SK = process.env.BOT_NOSTR_PRIVATE_KEY;
 if (!BOT_SK) throw new Error('Missing BOT_NOSTR_PRIVATE_KEY');
 const BOT_PK = getPublicKey(BOT_SK);
 const RELAYS = process.env.NOSTR_RELAYS.split(',');
-
-// — Create your pool —
 const pool = new SimplePool();
 
-// — Subscribe for any kind=1 event that tags your bot —
+// --- Subscribe for mentions ---
 pool.subscribe(
   RELAYS,
   [{ kinds: [1], '#p': [BOT_PK] }],
@@ -31,17 +29,17 @@ pool.subscribe(
       try {
         console.log('▶️  Mention:', event);
 
-        // 1) Pull out all Spotify track IDs
+        // extract track IDs
         const ids = [...event.content.matchAll(
           /open\.spotify\.com\/track\/([A-Za-z0-9]+)/g
         )].map(m => m[1]);
         if (!ids.length) return;
 
-        // 2) Create or fetch this user’s private playlist
+        // get/create playlist
         const { playlistId, accessToken } =
           await getOrCreatePlaylistForPubKey(event.pubkey);
 
-        // 3) Add the tracks
+        // add tracks
         const spotify = new SpotifyWebApi();
         spotify.setAccessToken(accessToken);
         await spotify.addTracksToPlaylist(
@@ -49,25 +47,24 @@ pool.subscribe(
           ids.map(id => `spotify:track:${id}`)
         );
 
-        // 4) Build & sign a reply
-        const replyTemplate = {
-          kind:     1,
-          pubkey:   BOT_PK,
+        // build & sign reply
+        const template = {
+          kind: 1,
+          pubkey: BOT_PK,
           created_at: Math.floor(Date.now() / 1000),
-          tags:     [['e', event.id]],
-          content:  `✅ Added ${ids.length} track(s): https://open.spotify.com/playlist/${playlistId}`
+          tags: [['e', event.id]],
+          content: `✅ Added ${ids.length} track(s): https://open.spotify.com/playlist/${playlistId}`
         };
-        const signedReply = finalizeEvent(replyTemplate, BOT_SK);
+        const signed = finalizeEvent(template, BOT_SK);
 
-        // 5) Publish your confirmation
-        await pool.publish(RELAYS, signedReply);
+        // publish reply
+        await pool.publish(RELAYS, signed);
         console.log('✔️  Replied and added tracks.');
-
-      } catch (err) {
-        console.error('❌ Error handling mention:', err);
+      } catch (e) {
+        console.error('❌ Error handling mention:', e);
       }
     }
   }
 );
 
-console.log(`▶️  Subscribed to mentions for ${BOT_PK}`);
+console.log(`▶️  Subscribed for mentions as ${BOT_PK}`);
