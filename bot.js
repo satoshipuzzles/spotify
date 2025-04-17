@@ -6,21 +6,21 @@ import { useWebSocketImplementation, SimplePool } from 'nostr-tools/pool';
 import WebSocket from 'ws';
 useWebSocketImplementation(WebSocket);
 
-// 2) Nostr helpers
+// 2) Nostr pure helpers
 import { getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 
 // 3) Spotify helper
 import SpotifyWebApi from 'spotify-web-api-node';
 import { getOrCreatePlaylistForPubKey } from './lib/db.js';
 
-// --- Bot config ---
+// --- Bot configuration & sanity check ---
 const BOT_SK = process.env.BOT_NOSTR_PRIVATE_KEY;
 if (!BOT_SK) throw new Error('Missing BOT_NOSTR_PRIVATE_KEY');
 const BOT_PK = getPublicKey(BOT_SK);
 const RELAYS = process.env.NOSTR_RELAYS.split(',');
 const pool = new SimplePool();
 
-// --- Subscribe for mentions ---
+// --- Subscribe for kind=1 mentions of our bot ---
 pool.subscribe(
   RELAYS,
   [{ kinds: [1], '#p': [BOT_PK] }],
@@ -29,17 +29,17 @@ pool.subscribe(
       try {
         console.log('▶️  Mention:', event);
 
-        // extract track IDs
+        // extract Spotify track IDs
         const ids = [...event.content.matchAll(
           /open\.spotify\.com\/track\/([A-Za-z0-9]+)/g
         )].map(m => m[1]);
         if (!ids.length) return;
 
-        // get/create playlist
+        // create or fetch the caller’s playlist
         const { playlistId, accessToken } =
           await getOrCreatePlaylistForPubKey(event.pubkey);
 
-        // add tracks
+        // add tracks to Spotify
         const spotify = new SpotifyWebApi();
         spotify.setAccessToken(accessToken);
         await spotify.addTracksToPlaylist(
@@ -47,21 +47,21 @@ pool.subscribe(
           ids.map(id => `spotify:track:${id}`)
         );
 
-        // build & sign reply
-        const template = {
+        // build & sign reply event
+        const replyTemplate = {
           kind: 1,
           pubkey: BOT_PK,
           created_at: Math.floor(Date.now() / 1000),
           tags: [['e', event.id]],
           content: `✅ Added ${ids.length} track(s): https://open.spotify.com/playlist/${playlistId}`
         };
-        const signed = finalizeEvent(template, BOT_SK);
+        const signedReply = finalizeEvent(replyTemplate, BOT_SK);
 
-        // publish reply
-        await pool.publish(RELAYS, signed);
+        // publish confirmation
+        await pool.publish(RELAYS, signedReply);
         console.log('✔️  Replied and added tracks.');
-      } catch (e) {
-        console.error('❌ Error handling mention:', e);
+      } catch (err) {
+        console.error('❌ Error handling mention:', err);
       }
     }
   }
