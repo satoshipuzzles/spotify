@@ -1,31 +1,46 @@
 // bot.js
 import 'dotenv/config';
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const { relayInit, getPublicKey, getEventHash, signEvent } = require('nostr-tools');
+
+// 1) Wire up WebSocket for Node.js
+import { useWebSocketImplementation, SimplePool } from 'nostr-tools/pool';
+import WebSocket from 'ws';
+useWebSocketImplementation(WebSocket);
+
+// 2) Core Nostr primitives
+import { getPublicKey, getEventHash, signEvent } from 'nostr-tools/pure';
+
+// 3) Spotify helper
 import SpotifyWebApi from 'spotify-web-api-node';
 import { getOrCreatePlaylistForPubKey } from './lib/db.js';
 
+// --- bot setup ---
 const BOT_SK = process.env.BOT_NOSTR_PRIVATE_KEY;
 if (!BOT_SK) throw new Error('Missing BOT_NOSTR_PRIVATE_KEY');
+
 const BOT_PK = getPublicKey(BOT_SK);
 const RELAYS = process.env.NOSTR_RELAYS.split(',');
+const pool = new SimplePool();
 
+// --- main listener ---
 async function main() {
-  const conns = await Promise.all(
-    RELAYS.map(url => relayInit(url).connect())
-  );
-  const sub = conns[0].sub([{ kinds: [1], '#p': [BOT_PK] }]);
+  // subscribe to any note (kind=1) that mentions us
+  const sub = pool.sub(RELAYS, [{ kinds: [1], '#p': [BOT_PK] }]);
 
-  sub.on('event', async event => {
+  for await (const event of sub) {
     try {
       console.log('▶️  Mention:', event);
-      const userPk = event.pubkey;
-      const ids = [...event.content.matchAll(/open\.spotify\.com\/track\/([A-Za-z0-9]+)/g)]
-        .map(m => m[1]);
-      if (!ids.length) return;
 
-      const { playlistId, accessToken } = await getOrCreatePlaylistForPubKey(userPk);
+      // extract Spotify track IDs
+      const ids = [...event.content.matchAll(
+        /open\.spotify\.com\/track\/([A-Za-z0-9]+)/g
+      )].map(m => m[1]);
+      if (!ids.length) continue;
+
+      // get (or create) this user’s playlist
+      const { playlistId, accessToken } =
+        await getOrCreatePlaylistForPubKey(event.pubkey);
+
+      // add tracks to Spotify
       const spotifyApi = new SpotifyWebApi();
       spotifyApi.setAccessToken(accessToken);
       await spotifyApi.addTracksToPlaylist(
@@ -33,6 +48,7 @@ async function main() {
         ids.map(id => `spotify:track:${id}`)
       );
 
+      // build reply event
       const reply = {
         kind: 1,
         pubkey: BOT_PK,
@@ -42,12 +58,14 @@ async function main() {
       };
       reply.id = getEventHash(reply);
       reply.sig = signEvent(reply, BOT_SK);
-      conns.forEach(c => c.publish(reply));
+
+      // publish confirmation
+      pool.publish(RELAYS, reply);
       console.log('✔️  Replied and added tracks.');
     } catch (e) {
       console.error('❌ Error handling mention:', e);
     }
-  });
+  }
 }
 
 main();
