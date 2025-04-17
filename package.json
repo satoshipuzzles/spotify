@@ -1,0 +1,18 @@
+{
+  "name": "spotify-nostr-bot",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "bot": "node bot.js"
+  },
+  "dependencies": {
+    "next": "13.4.5",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "spotify-web-api-node": "^5.0.2",
+    "nostr-tools": "^1.19.0",
+    "dotenv": "^16.0.3"
+  }
+}
