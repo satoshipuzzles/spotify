@@ -1,0 +1,7 @@
+{
+  "botSpotify": {
+    "accessToken": "",
+    "refreshToken": "",
+    "playlistMap": {}
+  }
+}
