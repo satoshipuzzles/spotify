@@ -1,3 +1,4 @@
+// next.config.mjs - Using .mjs extension for ES modules
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -8,9 +9,9 @@ const nextConfig = {
         ...config.resolve.fallback,
         ws: false,
         // Add other polyfills if needed
-        crypto: require.resolve('crypto-browserify'),
-        stream: require.resolve('stream-browserify'),
-        buffer: require.resolve('buffer')
+        crypto: false,
+        stream: false,
+        buffer: false
       };
     }
     
@@ -39,4 +40,4 @@ const nextConfig = {
   },
 };
 
-module.exports = nextConfig;
+export default nextConfig;
