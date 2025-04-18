@@ -3,7 +3,6 @@ import 'dotenv/config';
 
 // 1) Polyfill WebSocket in Node.js
 import WebSocket from 'ws';
-import { SimplePool } from 'nostr-tools/pool';
 import { useWebSocketImplementation } from 'nostr-tools/pool';
 globalThis.WebSocket = WebSocket;
 useWebSocketImplementation(WebSocket);
@@ -20,11 +19,51 @@ const BOT_SK = process.env.BOT_NOSTR_PRIVATE_KEY;
 if (!BOT_SK) throw new Error('Missing BOT_NOSTR_PRIVATE_KEY');
 const BOT_PK = getPublicKey(BOT_SK);
 const RELAYS = process.env.NOSTR_RELAYS.split(',');
-const pool = new SimplePool({ eoseTimeout: 10000, getTimeout: 7000 });
 
-// — Publish Kind 0 metadata (name/avatar/about) —
+// Function to connect to a relay
+function connectToRelay(url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    
+    const timeout = setTimeout(() => {
+      ws.close();
+      reject(new Error(`Connection timeout to ${url}`));
+    }, 10000);
+    
+    ws.on('open', () => {
+      clearTimeout(timeout);
+      console.log(`✅ Connected to ${url}`);
+      resolve(ws);
+    });
+    
+    ws.on('error', (err) => {
+      clearTimeout(timeout);
+      console.error(`❌ WS error on ${url}:`, err);
+      reject(err);
+    });
+  });
+}
+
+// — Main execution —
 (async () => {
   try {
+    // 1) Connect to relays
+    const connections = [];
+    for (const url of RELAYS) {
+      try {
+        const ws = await connectToRelay(url);
+        connections.push(ws);
+      } catch (err) {
+        console.error(`Failed to connect to ${url}:`, err.message);
+      }
+    }
+    
+    if (connections.length === 0) {
+      console.error("❌ Failed to connect to any relays. Exiting.");
+      process.exit(1);
+    }
+    
+    // 2) Publish Kind 0 metadata
     const meta = {
       kind: 0,
       pubkey: BOT_PK,
@@ -36,55 +75,76 @@ const pool = new SimplePool({ eoseTimeout: 10000, getTimeout: 7000 });
         about: process.env.NEXT_PUBLIC_BOT_ABOUT,
       })
     };
-    const signed = finalizeEvent(meta, BOT_SK);
+    const signedMeta = finalizeEvent(meta, BOT_SK);
     
-    // Try to publish to each relay individually to handle failures gracefully
-    for (const relay of RELAYS) {
+    for (const ws of connections) {
       try {
-        await pool.publish([relay], signed);
-        console.log(`📡 Bot metadata published to ${relay}`);
+        ws.send(JSON.stringify(['EVENT', signedMeta]));
+        console.log(`📡 Metadata published to ${ws.url}`);
       } catch (err) {
-        console.error(`⚠️ Failed to publish metadata to ${relay}:`, err.message);
+        console.error(`Failed to publish metadata to ${ws.url}:`, err.message);
       }
     }
     
-    // — Subscribe for kind=1 notes tagging your bot's pubkey —  
-    console.log(`🚀 Subscribing for mentions of ${BOT_PK} on ${RELAYS.join(', ')}`);
-    
-    pool.subscribe(
-      RELAYS,
-      // **array** of filter objects:
-      [{ kinds: [1], '#p': [BOT_PK] }],
-      {
-        onevent: async (event) => {
+    // 3) Set up subscription
+    console.log(`🚀 Subscribing for mentions of ${BOT_PK}`);
+    for (const ws of connections) {
+      try {
+        // Create subscription for mentions
+        const subId = 'sub_' + Math.random().toString(36).slice(2);
+        ws.send(JSON.stringify(['REQ', subId, { kinds: [1], '#p': [BOT_PK] }]));
+        
+        ws.on('message', async (data) => {
           try {
-            console.log('▶️  Mention:', event);
-
-            // extract Spotify track IDs
+            const message = JSON.parse(data.toString());
+            
+            // Handle NOTICE messages (for debugging)
+            if (message[0] === 'NOTICE') {
+              console.log(`NOTICE from ${ws.url}: ${message[1]}`);
+              return;
+            }
+            
+            // Only handle EVENT messages
+            if (message[0] !== 'EVENT') return;
+            
+            // Extract the event
+            const event = message[2];
+            if (!event || event.kind !== 1) return;
+            
+            // Check if event tags mention our bot
+            const containsTag = event.tags.some(tag => 
+              tag.length >= 2 && tag[0] === 'p' && tag[1] === BOT_PK
+            );
+            
+            if (!containsTag) return;
+            
+            console.log('▶️ Mention received:', event);
+            
+            // Extract Spotify track IDs
             const ids = [...event.content.matchAll(
               /open\.spotify\.com\/track\/([A-Za-z0-9]+)/g
             )].map(m => m[1]);
             
             if (!ids.length) {
-              console.log('⚠️ No Spotify track links found in the message');
+              console.log('⚠️ No Spotify track IDs found in mention');
               return;
             }
-
-            // get or create playlist
-            console.log(`🎵 Finding/creating playlist for pubkey: ${event.pubkey}`);
-            const { playlistId, accessToken } =
+            
+            // Get/create playlist
+            console.log(`Finding playlist for pubkey: ${event.pubkey}`);
+            const { playlistId, accessToken } = 
               await getOrCreatePlaylistForPubKey(event.pubkey);
-
-            // add tracks to Spotify
-            console.log(`🎵 Adding ${ids.length} tracks to playlist: ${playlistId}`);
+            
+            // Add tracks to Spotify
+            console.log(`Adding ${ids.length} tracks to playlist`);
             const spotify = new SpotifyWebApi();
             spotify.setAccessToken(accessToken);
             await spotify.addTracksToPlaylist(
               playlistId,
               ids.map(id => `spotify:track:${id}`)
             );
-
-            // build & sign reply
+            
+            // Reply with confirmation
             const reply = {
               kind: 1,
               pubkey: BOT_PK,
@@ -92,37 +152,44 @@ const pool = new SimplePool({ eoseTimeout: 10000, getTimeout: 7000 });
               tags: [['e', event.id]],
               content: `✅ Added ${ids.length} track(s): https://open.spotify.com/playlist/${playlistId}`
             };
+            const signedReply = finalizeEvent(reply, BOT_SK);
             
-            // Try to publish to each relay individually
-            for (const relay of RELAYS) {
+            for (const connection of connections) {
               try {
-                await pool.publish([relay], finalizeEvent(reply, BOT_SK));
-                console.log(`✔️ Reply published to ${relay}`);
-              } catch (err) {
-                console.error(`⚠️ Failed to publish reply to ${relay}:`, err.message);
+                connection.send(JSON.stringify(['EVENT', signedReply]));
+                console.log(`✔️ Reply sent via ${connection.url}`);
+              } catch (error) {
+                console.error(`Failed to send reply via ${connection.url}:`, error);
               }
             }
             
-            console.log('✔️ Replied and added tracks.');
           } catch (err) {
-            console.error('❌ Error processing event:', err);
+            console.error('❌ Error processing message:', err);
           }
-        },
-        onerror: (err, relay) => {
-          console.error(`⚠️ Subscription error on ${relay}:`, err);
-        }
+        });
+        
+        console.log(`✅ Subscribed to ${ws.url} with ID: ${subId}`);
+      } catch (err) {
+        console.error(`Failed to subscribe to ${ws.url}:`, err.message);
       }
-    );
+    }
+    
+    console.log('🤖 Bot is now running and listening for mentions...');
+    
   } catch (err) {
-    console.error('❌ Error in bot setup:', err);
+    console.error('❌ Fatal error:', err);
+    process.exit(1);
   }
 })();
 
-// Keep the process running
+// Keep the process alive
+process.stdin.resume();
+
+// Handle unexpected errors
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason);
 });
