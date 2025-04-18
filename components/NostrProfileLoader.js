@@ -1,9 +1,8 @@
 // components/NostrProfileLoader.js
 import React, { useState, useEffect } from 'react';
 
-// Simple browser-side nostr profile loader 
-// This helps when server-side profile fetching fails or times out
-export default function NostrProfileLoader({ pubkey, initialName, initialPicture, relays }) {
+// Use this hook in your component
+export function useNostrProfile(pubkey, initialName, initialPicture, relays) {
   const [profileData, setProfileData] = useState({
     name: initialName || `nostr:${pubkey.slice(0, 8)}...`,
     picture: initialPicture
@@ -29,46 +28,52 @@ export default function NostrProfileLoader({ pubkey, initialName, initialPicture
       setIsLoading(true);
       
       try {
-        // Dynamically import nostr libraries only in the browser
-        const nostrTools = await import('nostr-tools');
-        
-        // Create a temporary web socket pool for fetching
-        const pool = new nostrTools.SimplePool();
-        
-        // Subscribe to metadata events for this pubkey
-        const filter = {
-          kinds: [0],
-          authors: [pubkey],
-          limit: 1
-        };
-        
-        // Set a timeout to avoid hanging
-        const timeoutId = setTimeout(() => {
-          if (isMounted) {
-            setIsLoading(false);
-          }
-          pool.close(relayList);
-        }, 5000);
-        
-        // Fetch from relays
-        const events = await pool.list(relayList, [filter]);
-        
-        clearTimeout(timeoutId);
-        
-        if (!isMounted) return;
-        
-        // Process events
-        if (events && events.length > 0) {
+        // In browser environments, dynamically import nostr-tools
+        if (typeof window !== 'undefined') {
           try {
-            const profileEvent = events[0];
-            const content = JSON.parse(profileEvent.content);
+            const nostrTools = await import('nostr-tools');
             
-            setProfileData({
-              name: content.name || profileData.name,
-              picture: content.picture || profileData.picture
-            });
-          } catch (e) {
-            console.error('Error parsing profile content:', e);
+            // Create a temporary web socket pool for fetching
+            const pool = new nostrTools.SimplePool();
+            
+            // Subscribe to metadata events for this pubkey
+            const filter = {
+              kinds: [0],
+              authors: [pubkey],
+              limit: 1
+            };
+            
+            // Set a timeout to avoid hanging
+            const timeoutId = setTimeout(() => {
+              if (isMounted) {
+                setIsLoading(false);
+              }
+              pool.close(relayList);
+            }, 5000);
+            
+            // Fetch from relays
+            const events = await pool.list(relayList, [filter]);
+            
+            clearTimeout(timeoutId);
+            
+            if (!isMounted) return;
+            
+            // Process events
+            if (events && events.length > 0) {
+              try {
+                const profileEvent = events[0];
+                const content = JSON.parse(profileEvent.content);
+                
+                setProfileData({
+                  name: content.name || profileData.name,
+                  picture: content.picture || profileData.picture
+                });
+              } catch (e) {
+                console.error('Error parsing profile content:', e);
+              }
+            }
+          } catch (importErr) {
+            console.warn('Error importing nostr-tools:', importErr);
           }
         }
       } catch (error) {
@@ -89,3 +94,6 @@ export default function NostrProfileLoader({ pubkey, initialName, initialPicture
   
   return { ...profileData, isLoading };
 }
+
+// Default export for backward compatibility
+export default useNostrProfile;
