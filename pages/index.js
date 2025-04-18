@@ -1,7 +1,7 @@
 // pages/index.js
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
-import NostrProfileLoader from '../components/NostrProfileLoader';
+import { useNostrProfile } from '../components/NostrProfileLoader';
 
 const BOT_NAME = process.env.NEXT_PUBLIC_BOT_NAME || 'Nostr Spotify Bot';
 const BOT_AVATAR = process.env.NEXT_PUBLIC_BOT_AVATAR;
@@ -58,7 +58,6 @@ export default function Home() {
         <meta name="description" content="Create and share Spotify playlists via Nostr" />
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
         <link rel="icon" href="/favicon.ico" />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
         <style>{`
           /* Fix for Spotify iframe sizing */
           .spotify-embed {
@@ -73,7 +72,7 @@ export default function Home() {
           body {
             background-color: #111827;
             color: #f3f4f6;
-            font-family: 'Inter', sans-serif;
+            font-family: sans-serif;
           }
         `}</style>
       </Head>
@@ -208,9 +207,9 @@ export default function Home() {
           ) : (
             <div className="space-y-6">
               {leaderboard.map(({ pubkey, playlistUrl, name, profilePic }) => {
-                // Use client-side profile loader to fetch or enhance profile data
+                // Use the custom hook to fetch profile data
                 const { name: enhancedName, picture: enhancedPic, isLoading } = 
-                  NostrProfileLoader({ pubkey, initialName: name, initialPicture: profilePic });
+                  useNostrProfile(pubkey, name, profilePic);
                 
                 // Use the enhanced data if available, fall back to server data
                 const displayName = enhancedName || name || `User ${pubkey.substring(0, 6)}...`;
