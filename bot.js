@@ -4,6 +4,7 @@ import 'dotenv/config';
 // 1) Polyfill WebSocket in Node.js
 import WebSocket from 'ws';
 import { useWebSocketImplementation } from 'nostr-tools/pool';
+import { nip19 } from 'nostr-tools';
 globalThis.WebSocket = WebSocket;
 useWebSocketImplementation(WebSocket);
 
@@ -19,6 +20,16 @@ const BOT_SK = process.env.BOT_NOSTR_PRIVATE_KEY;
 if (!BOT_SK) throw new Error('Missing BOT_NOSTR_PRIVATE_KEY');
 const BOT_PK = getPublicKey(BOT_SK);
 const RELAYS = process.env.NOSTR_RELAYS.split(',');
+
+// Debug info for the pubkey
+console.log('Bot pubkey (hex):', BOT_PK);
+try {
+  const npub = nip19.npubEncode(BOT_PK);
+  console.log('Bot npub:', npub);
+  console.log('Expected npub:', process.env.NEXT_PUBLIC_BOT_PUBKEY || 'not set in env');
+} catch (e) {
+  console.error('Failed to encode npub:', e);
+}
 
 // Function to connect to a relay
 function connectToRelay(url) {
@@ -96,6 +107,9 @@ function connectToRelay(url) {
         
         ws.on('message', async (data) => {
           try {
+            // Log raw message for debugging
+            console.log(`Raw message from ${ws.url}:`, data.toString().substring(0, 200) + '...');
+            
             const message = JSON.parse(data.toString());
             
             // Handle NOTICE messages (for debugging)
@@ -109,21 +123,36 @@ function connectToRelay(url) {
             
             // Extract the event
             const event = message[2];
-            if (!event || event.kind !== 1) return;
+            if (!event || event.kind !== 1) {
+              console.log('Not a kind 1 event, ignoring:', event ? `kind=${event.kind}` : 'undefined event');
+              return;
+            }
+            
+            console.log('Received kind 1 event:', JSON.stringify(event).substring(0, 300) + '...');
+            console.log('Event tags:', JSON.stringify(event.tags));
             
             // Check if event tags mention our bot
-            const containsTag = event.tags.some(tag => 
-              tag.length >= 2 && tag[0] === 'p' && tag[1] === BOT_PK
-            );
+            const containsTag = event.tags.some(tag => {
+              const isMatch = tag.length >= 2 && tag[0] === 'p' && tag[1] === BOT_PK;
+              console.log(`Tag check: ${tag} - matches our pubkey? ${isMatch}`);
+              return isMatch;
+            });
             
-            if (!containsTag) return;
+            if (!containsTag) {
+              console.log('⚠️ Event does not contain our pubkey tag, ignoring');
+              return;
+            }
             
             console.log('▶️ Mention received:', event);
             
             // Extract Spotify track IDs
-            const ids = [...event.content.matchAll(
+            const trackMatches = [...event.content.matchAll(
               /open\.spotify\.com\/track\/([A-Za-z0-9]+)/g
-            )].map(m => m[1]);
+            )];
+            console.log('Track matches:', trackMatches);
+            
+            const ids = trackMatches.map(m => m[1]);
+            console.log('Extracted track IDs:', ids);
             
             if (!ids.length) {
               console.log('⚠️ No Spotify track IDs found in mention');
