@@ -55,6 +55,12 @@ function connectToRelay(url) {
   });
 }
 
+// Extract playlist name from event content
+function extractPlaylistName(content) {
+  const hashtagMatch = content.match(/#(\w+)/);
+  return hashtagMatch ? hashtagMatch[1] : null;
+}
+
 // — Main execution —
 (async () => {
   try {
@@ -159,19 +165,48 @@ function connectToRelay(url) {
               return;
             }
             
+            // Extract playlist name if present
+            const playlistName = extractPlaylistName(event.content);
+            console.log('Playlist name:', playlistName || 'Not specified');
+            
             // Get/create playlist
             console.log(`Finding playlist for pubkey: ${event.pubkey}`);
             const { playlistId, accessToken } = 
-              await getOrCreatePlaylistForPubKey(event.pubkey);
+              await getOrCreatePlaylistForPubKey(event.pubkey, playlistName);
             
-            // Add tracks to Spotify
-            console.log(`Adding ${ids.length} tracks to playlist`);
+            // Check for duplicates before adding tracks
             const spotify = new SpotifyWebApi();
             spotify.setAccessToken(accessToken);
-            await spotify.addTracksToPlaylist(
-              playlistId,
-              ids.map(id => `spotify:track:${id}`)
-            );
+            
+            try {
+              // Get current tracks in the playlist
+              const { body: currentPlaylist } = await spotify.getPlaylist(playlistId);
+              const existingTrackIds = currentPlaylist.tracks.items.map(item => 
+                item.track.uri.split(':').pop()
+              );
+              
+              // Filter out tracks that are already in the playlist
+              const newTrackIds = ids.filter(id => !existingTrackIds.includes(id));
+              
+              if (newTrackIds.length > 0) {
+                console.log(`Adding ${newTrackIds.length} tracks to playlist`);
+                await spotify.addTracksToPlaylist(
+                  playlistId,
+                  newTrackIds.map(id => `spotify:track:${id}`)
+                );
+                console.log(`Added ${newTrackIds.length} new tracks to playlist`);
+              } else {
+                console.log('All tracks already exist in the playlist');
+              }
+            } catch (error) {
+              console.error('Error checking for duplicates:', error);
+              // Fallback to adding all tracks
+              console.log('Falling back to adding all tracks without deduplication');
+              await spotify.addTracksToPlaylist(
+                playlistId,
+                ids.map(id => `spotify:track:${id}`)
+              );
+            }
             
             // Reply with confirmation
             const reply = {
