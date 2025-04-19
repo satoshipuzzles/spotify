@@ -47,9 +47,9 @@ export default function Home() {
       // Initialize playlist data with placeholder profiles
       playlistData = playlistData.map(playlist => ({
         ...playlist,
-        name: null,
-        profilePic: null,
-        profileLoaded: false,
+        name: playlist.name || null,
+        profilePic: playlist.profilePic || null,
+        profileLoaded: Boolean(playlist.name && playlist.profilePic),
         profileError: false
       }));
       
@@ -79,10 +79,10 @@ export default function Home() {
     
     try {
       // Dynamic import to avoid SSR issues
-      const nostrTools = await import('nostr-tools');
+      const { nip19, SimplePool } = await import('nostr-tools');
       
-      // Create a pool for the relays
-      const pool = new nostrTools.SimplePool();
+      // Create a pool for the relays - fixed SimplePool instantiation
+      const pool = new SimplePool();
       
       // Only use one relay at a time to avoid rate limiting
       // Choose a random relay from our list to distribute load
@@ -101,11 +101,11 @@ export default function Home() {
         setTimeout(() => reject(new Error('Profile fetch timeout')), 5000)
       );
       
-      // Try to fetch profile
-      const eventPromise = pool.list([relay], [filter]);
+      // Use the correct method for fetching events
+      const eventPromise = pool.get([relay], filter);
       
       // Race between fetch and timeout
-      const events = await Promise.race([eventPromise, timeoutPromise]);
+      const event = await Promise.race([eventPromise, timeoutPromise]);
       
       // Clean up
       try {
@@ -115,9 +115,9 @@ export default function Home() {
       }
       
       // Parse the profile data if available
-      if (events && events.length > 0) {
+      if (event) {
         try {
-          const content = JSON.parse(events[0].content);
+          const content = JSON.parse(event.content);
           return {
             name: content.name || null,
             picture: content.picture || null,
@@ -239,135 +239,6 @@ export default function Home() {
         <meta name="description" content="Create and share Spotify playlists via Nostr" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/favicon.ico" />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
-        <style>{`
-          :root {
-            --spotify-green: #1DB954;
-            --spotify-green-hover: #1ed760;
-            --dark-bg: #121212;
-            --card-bg: #181818;
-            --highlight: #282828;
-          }
-          
-          body {
-            font-family: 'Inter', sans-serif;
-            background-color: var(--dark-bg);
-            color: #fff;
-          }
-          
-          h1, h2, h3, h4, h5, h6 {
-            font-family: 'Manrope', sans-serif;
-          }
-          
-          .spotify-card iframe {
-            max-height: 80px !important;
-            border-radius: 0 0 8px 8px;
-          }
-          
-          .npub-box {
-            font-family: monospace;
-            overflow-wrap: break-word;
-            word-wrap: break-word;
-            word-break: break-all;
-          }
-          
-          .profile-image {
-            width: 32px;
-            height: 32px;
-            object-fit: cover;
-          }
-          
-          .spotify-icon {
-            width: 14px;
-            height: 14px;
-          }
-          
-          .step-number {
-            width: 24px;
-            height: 24px;
-            font-size: 12px;
-          }
-          
-          .nav-tab {
-            transition: all 0.3s ease;
-            position: relative;
-          }
-          
-          .nav-tab.active::after {
-            content: '';
-            position: absolute;
-            bottom: -1px;
-            left: 25%;
-            width: 50%;
-            height: 2px;
-            background-color: var(--spotify-green);
-            border-radius: 1px;
-          }
-          
-          .nav-tab.active {
-            color: var(--spotify-green);
-          }
-          
-          .btn {
-            transition: all 0.2s ease;
-            font-weight: 500;
-          }
-          
-          .btn:hover {
-            transform: translateY(-1px);
-          }
-          
-          .btn:active {
-            transform: translateY(1px);
-          }
-          
-          .btn-primary {
-            background-color: var(--spotify-green);
-          }
-          
-          .btn-primary:hover {
-            background-color: var(--spotify-green-hover);
-          }
-          
-          .spotify-btn {
-            background-color: var(--spotify-green);
-            color: #000;
-            font-weight: 600;
-            letter-spacing: 0.5px;
-            transition: all 0.2s ease;
-          }
-          
-          .spotify-btn:hover {
-            background-color: var(--spotify-green-hover);
-            transform: scale(1.03);
-          }
-          
-          .card {
-            background-color: var(--card-bg);
-            border: 1px solid var(--highlight);
-            transition: all 0.2s ease;
-          }
-          
-          .card:hover {
-            background-color: #202020;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-          }
-          
-          .shimmer {
-            background: linear-gradient(90deg, 
-              rgba(255,255,255,0.05) 0%, 
-              rgba(255,255,255,0.1) 50%, 
-              rgba(255,255,255,0.05) 100%);
-            background-size: 200% 100%;
-            animation: shimmer 1.5s infinite;
-          }
-          
-          @keyframes shimmer {
-            0% { background-position: -200% 0; }
-            100% { background-position: 200% 0; }
-          }
-        `}</style>
       </Head>
 
       {/* Header */}
@@ -618,6 +489,136 @@ export default function Home() {
           <p className="mt-1">© {new Date().getFullYear()}</p>
         </div>
       </footer>
+
+      {/* Global styles */}
+      <style jsx global>{`
+        :root {
+          --spotify-green: #1DB954;
+          --spotify-green-hover: #1ed760;
+          --dark-bg: #121212;
+          --card-bg: #181818;
+          --highlight: #282828;
+        }
+        
+        body {
+          font-family: 'Inter', sans-serif;
+          background-color: var(--dark-bg);
+          color: #fff;
+        }
+        
+        h1, h2, h3, h4, h5, h6 {
+          font-family: 'Manrope', sans-serif;
+        }
+        
+        .spotify-card iframe {
+          max-height: 80px !important;
+          border-radius: 0 0 8px 8px;
+        }
+        
+        .npub-box {
+          font-family: monospace;
+          overflow-wrap: break-word;
+          word-wrap: break-word;
+          word-break: break-all;
+        }
+        
+        .profile-image {
+          width: 32px;
+          height: 32px;
+          object-fit: cover;
+        }
+        
+        .spotify-icon {
+          width: 14px;
+          height: 14px;
+        }
+        
+        .step-number {
+          width: 24px;
+          height: 24px;
+          font-size: 12px;
+        }
+        
+        .nav-tab {
+          transition: all 0.3s ease;
+          position: relative;
+        }
+        
+        .nav-tab.active::after {
+          content: '';
+          position: absolute;
+          bottom: -1px;
+          left: 25%;
+          width: 50%;
+          height: 2px;
+          background-color: var(--spotify-green);
+          border-radius: 1px;
+        }
+        
+        .nav-tab.active {
+          color: var(--spotify-green);
+        }
+        
+        .btn {
+          transition: all 0.2s ease;
+          font-weight: 500;
+        }
+        
+        .btn:hover {
+          transform: translateY(-1px);
+        }
+        
+        .btn:active {
+          transform: translateY(1px);
+        }
+        
+        .btn-primary {
+          background-color: var(--spotify-green);
+        }
+        
+        .btn-primary:hover {
+          background-color: var(--spotify-green-hover);
+        }
+        
+        .spotify-btn {
+          background-color: var(--spotify-green);
+          color: #000;
+          font-weight: 600;
+          letter-spacing: 0.5px;
+          transition: all 0.2s ease;
+        }
+        
+        .spotify-btn:hover {
+          background-color: var(--spotify-green-hover);
+          transform: scale(1.03);
+        }
+        
+        .card {
+          background-color: var(--card-bg);
+          border: 1px solid var(--highlight);
+          transition: all 0.2s ease;
+        }
+        
+        .card:hover {
+          background-color: #202020;
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+        
+        .shimmer {
+          background: linear-gradient(90deg, 
+            rgba(255,255,255,0.05) 0%, 
+            rgba(255,255,255,0.1) 50%, 
+            rgba(255,255,255,0.05) 100%);
+          background-size: 200% 100%;
+          animation: shimmer 1.5s infinite;
+        }
+        
+        @keyframes shimmer {
+          0% { background-position: -200% 0; }
+          100% { background-position: 200% 0; }
+        }
+      `}</style>
     </div>
   );
 }
