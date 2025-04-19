@@ -13,7 +13,7 @@ import { getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 
 // 3) Spotify helper
 import SpotifyWebApi from 'spotify-web-api-node';
-import { getOrCreatePlaylistForPubKey } from './lib/db.js';
+import { getOrCreatePlaylistForPubKey, getOrCreateGlobalPlaylist } from './lib/db.js';
 
 // — Bot config & sanity check —
 const BOT_SK = process.env.BOT_NOSTR_PRIVATE_KEY;
@@ -59,6 +59,24 @@ function connectToRelay(url) {
 function extractPlaylistName(content) {
   const hashtagMatch = content.match(/#(\w+)/);
   return hashtagMatch ? hashtagMatch[1] : null;
+}
+
+// Find original event ID in a thread
+function findOriginalEventId(event) {
+  // Look for e-tags that mark the original event in a thread
+  const rootTag = event.tags.find(tag => tag.length >= 3 && tag[0] === 'e' && tag[3] === 'root');
+  if (rootTag) {
+    return rootTag[1]; // Return the event ID from the root tag
+  }
+  
+  // If no root tag, check for a reply tag
+  const replyTag = event.tags.find(tag => tag.length >= 2 && tag[0] === 'e');
+  if (replyTag) {
+    return replyTag[1]; // Return the event ID from the reply tag
+  }
+  
+  // If neither found, this is the original event
+  return event.id;
 }
 
 // — Main execution —
@@ -169,52 +187,92 @@ function extractPlaylistName(content) {
             const playlistName = extractPlaylistName(event.content);
             console.log('Playlist name:', playlistName || 'Not specified');
             
-            // Get/create playlist
-            console.log(`Finding playlist for pubkey: ${event.pubkey}`);
+            // Determine if this is a reply in a thread
+            const originalEventId = findOriginalEventId(event);
+            let authorToUse = event.pubkey;
+            
+            // If this is a reply and not the original event, we need to look up the original author
+            if (originalEventId !== event.id) {
+              // Here we would normally fetch the original event to get its author
+              // For now, we'll use the current author as fallback
+              console.log(`This is a reply in a thread. Original event: ${originalEventId}`);
+              
+              // You could add code here to fetch the original event and use its author
+              // For now we just use the current author
+            }
+            
+            // Get/create user's personal playlist
+            console.log(`Finding playlist for pubkey: ${authorToUse}`);
             const { playlistId, accessToken } = 
-              await getOrCreatePlaylistForPubKey(event.pubkey, playlistName);
+              await getOrCreatePlaylistForPubKey(authorToUse, playlistName);
+            
+            // Also get/create global playlist
+            const { globalPlaylistId } = await getOrCreateGlobalPlaylist();
             
             // Check for duplicates before adding tracks
             const spotify = new SpotifyWebApi();
             spotify.setAccessToken(accessToken);
             
-            try {
-              // Get current tracks in the playlist
-              const { body: currentPlaylist } = await spotify.getPlaylist(playlistId);
-              const existingTrackIds = currentPlaylist.tracks.items.map(item => 
-                item.track.uri.split(':').pop()
-              );
-              
-              // Filter out tracks that are already in the playlist
-              const newTrackIds = ids.filter(id => !existingTrackIds.includes(id));
-              
-              if (newTrackIds.length > 0) {
-                console.log(`Adding ${newTrackIds.length} tracks to playlist`);
-                await spotify.addTracksToPlaylist(
-                  playlistId,
-                  newTrackIds.map(id => `spotify:track:${id}`)
+            // Function to add tracks to a playlist
+            const addTracksToPlaylist = async (playlist, trackIds) => {
+              try {
+                // Get current tracks in the playlist
+                const { body: currentPlaylist } = await spotify.getPlaylist(playlist);
+                const existingTrackIds = currentPlaylist.tracks.items.map(item => 
+                  item.track.uri.split(':').pop()
                 );
-                console.log(`Added ${newTrackIds.length} new tracks to playlist`);
-              } else {
-                console.log('All tracks already exist in the playlist');
+                
+                // Filter out tracks that are already in the playlist
+                const newTrackIds = trackIds.filter(id => !existingTrackIds.includes(id));
+                
+                if (newTrackIds.length > 0) {
+                  console.log(`Adding ${newTrackIds.length} tracks to playlist ${playlist}`);
+                  await spotify.addTracksToPlaylist(
+                    playlist,
+                    newTrackIds.map(id => `spotify:track:${id}`)
+                  );
+                  return newTrackIds.length;
+                } else {
+                  console.log(`All tracks already exist in playlist ${playlist}`);
+                  return 0;
+                }
+              } catch (error) {
+                console.error(`Error adding tracks to playlist ${playlist}:`, error);
+                // Fallback to adding all tracks without deduplication
+                try {
+                  console.log('Falling back to adding all tracks without deduplication');
+                  await spotify.addTracksToPlaylist(
+                    playlist,
+                    trackIds.map(id => `spotify:track:${id}`)
+                  );
+                  return trackIds.length;
+                } catch (fallbackError) {
+                  console.error('Failed even with fallback approach:', fallbackError);
+                  return 0;
+                }
               }
-            } catch (error) {
-              console.error('Error checking for duplicates:', error);
-              // Fallback to adding all tracks
-              console.log('Falling back to adding all tracks without deduplication');
-              await spotify.addTracksToPlaylist(
-                playlistId,
-                ids.map(id => `spotify:track:${id}`)
-              );
-            }
+            };
+            
+            // Add tracks to user's personal playlist
+            const addedToPersonal = await addTracksToPlaylist(playlistId, ids);
+            
+            // Add to global playlist
+            const addedToGlobal = await addTracksToPlaylist(globalPlaylistId, ids);
             
             // Reply with confirmation
+            let replyContent = `✅ Added ${addedToPersonal} track(s) to your playlist: https://open.spotify.com/playlist/${playlistId}`;
+            
+            // If tracks were also added to global playlist, mention it
+            if (addedToGlobal > 0) {
+              replyContent += `\n\nAlso added to our global playlist: https://open.spotify.com/playlist/${globalPlaylistId}`;
+            }
+            
             const reply = {
               kind: 1,
               pubkey: BOT_PK,
               created_at: Math.floor(Date.now() / 1000),
-              tags: [['e', event.id]],
-              content: `✅ Added ${ids.length} track(s): https://open.spotify.com/playlist/${playlistId}`
+              tags: [['e', event.id], ['p', event.pubkey]],
+              content: replyContent
             };
             const signedReply = finalizeEvent(reply, BOT_SK);
             
