@@ -4,7 +4,7 @@ import Head from 'next/head';
 
 // Constants that can be moved to environment variables
 const BOT_NAME = process.env.NEXT_PUBLIC_BOT_NAME || 'Nostr Spotify Bot';
-const BOT_AVATAR = process.env.NEXT_PUBLIC_BOT_AVATAR || 'https://nostr.build/i/nostr.png';
+const BOT_AVATAR = process.env.NEXT_PUBLIC_BOT_AVATAR || 'https://image.nostr.build/264d158e4518b1d2edac9202213d350a9e7ac75ecc2d53eac7f559f97ea8e410.jpg';
 const BOT_NPUB = process.env.NEXT_PUBLIC_BOT_PUBKEY || 'npub1...';
 const BOT_ABOUT = process.env.NEXT_PUBLIC_BOT_ABOUT || 'Create Spotify playlists via Nostr mentions';
 
